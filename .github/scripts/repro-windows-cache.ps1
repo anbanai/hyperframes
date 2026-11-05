@@ -25,3 +25,9 @@ Step "preview --background, cache in proj" @("preview", "--background", "--json"
 Step "preview --status" @("preview", "--status", "--json")
 Step "preview --stop" @("preview", "--stop", "--json")
 Write-Output ("FILES under the project cache: {0}" -f (Get-ChildItem -Recurse -File "$p\.hfcache" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match "preview" }).Count)
+$cli = "$env:GITHUB_WORKSPACE\packages\cli\bin\hyperframes.mjs"
+Write-Output "== this branch (session follows HYPERFRAMES_CACHE_DIR)"
+Step "branch preview --background" @("preview", "--background", "--json")
+Step "branch preview --status" @("preview", "--status", "--json")
+Step "branch preview --stop" @("preview", "--stop", "--json")
+Write-Output ("FILES under the project cache: {0}" -f (Get-ChildItem -Recurse -File "$p\.hfcache" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match "preview" }).Count)
