@@ -1,0 +1,28 @@
+name: Request Codeup Sync
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: request-codeup-sync
+  cancel-in-progress: false
+
+jobs:
+  request:
+    if: github.repository_owner == 'anbanai' && vars.CODEUP_SYNC_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Request synchronization in the private controller
+        env:
+          GH_TOKEN: ${{ secrets.CODEUP_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo '::error::Set CODEUP_DISPATCH_TOKEN with Actions write access only to anbanai/thirdparty-sync.'
+            exit 1
+          fi
+          gh api --method POST repos/anbanai/thirdparty-sync/actions/workflows/sync-thirdparty-codeup.yml/dispatches -f ref=main
