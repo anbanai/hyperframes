@@ -37,7 +37,7 @@
   },
   "@hyperframes/producer": {
     "packed": 857000,
-    "unpacked": 3081613
+    "unpacked": 3130000
   },
   "@hyperframes/sdk": {
     "packed": 90662,
@@ -46,6 +46,10 @@
   "@hyperframes/shader-transitions": {
     "packed": 212864,
     "unpacked": 825937
+  },
+  "@hyperframes/share": {
+    "packed": 60820,
+    "unpacked": 240537
   },
   "@hyperframes/studio": {
     "packed": 5998328,

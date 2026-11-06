@@ -260,6 +260,18 @@ function framesSkippedSinceLastSeek(
   return [...replay].sort((x, y) => y - x).map((back) => t - back / fps);
 }
 
+function landOn(
+  timeline: RuntimeTimelineLike,
+  t: number,
+  suppressEvents: boolean,
+  version: string,
+): number {
+  const from = Number(timeline.totalTime?.());
+  timeline.totalTime?.(t, suppressEvents);
+  settleOverlapsEndedBetween(timeline, from, t, version);
+  return from;
+}
+
 export function seekGsapTimeline(
   timeline: RuntimeTimelineLike,
   t: number,
@@ -271,14 +283,13 @@ export function seekGsapTimeline(
     if (typeof timeline.seek === "function") timeline.seek(t, suppressEvents);
     return false;
   }
+  const version = structure?.version ?? "";
   if (renderFps) {
-    for (const time of framesSkippedSinceLastSeek(timeline, t, renderFps, structure?.version)) {
-      timeline.totalTime(time, suppressEvents);
+    for (const time of framesSkippedSinceLastSeek(timeline, t, renderFps, version)) {
+      landOn(timeline, time, suppressEvents, version);
     }
   }
-  const from = Number(timeline.totalTime());
-  timeline.totalTime(t, suppressEvents);
-  if (!renderFps) settleOverlapsEndedBetween(timeline, from, t, structure?.version ?? "");
+  const from = landOn(timeline, t, suppressEvents, version);
   if (t < from && structure) reapplyStepsInAuthoredOrder(timeline, structure, t);
   if (from !== t || !gsapNeverRendered(timeline)) return false;
   rerenderGsapTimelineAt(
@@ -468,6 +479,43 @@ export function holdFrameMarks({
       }
     }
     for (const put of marks) put();
+  };
+}
+
+type GsapCallbackHolder = {
+  vars?: Record<string, unknown>;
+  timeline?: { getChildren?: RuntimeTimelineLike["getChildren"] };
+  getChildren?: RuntimeTimelineLike["getChildren"];
+};
+
+const DISCRETE_CALLBACKS = ["onStart", "onComplete", "onReverseComplete", "onRepeat"] as const;
+
+const noOpInPlaceOfCallback = (): void => {};
+
+function eachAnimationIn(
+  animation: GsapCallbackHolder,
+  visit: (a: GsapCallbackHolder) => void,
+): void {
+  visit(animation);
+  for (const child of (animation.getChildren?.(false, true, true) ?? []) as GsapCallbackHolder[])
+    eachAnimationIn(child, visit);
+  if (animation.timeline) eachAnimationIn(animation.timeline as GsapCallbackHolder, visit);
+}
+
+export function muteDiscreteCallbacks(timelines: RuntimeTimelineLike[]): () => void {
+  const held: Array<[Record<string, unknown>, string, unknown]> = [];
+  for (const timeline of timelines) {
+    eachAnimationIn(gsapTimelineOf(timeline) as GsapCallbackHolder, ({ vars }) => {
+      if (!vars) return;
+      for (const name of DISCRETE_CALLBACKS) {
+        if (typeof vars[name] !== "function" || vars[name] === noOpInPlaceOfCallback) continue;
+        held.push([vars, name, vars[name]]);
+        vars[name] = noOpInPlaceOfCallback;
+      }
+    });
+  }
+  return () => {
+    for (const [vars, name, callback] of held) vars[name] = callback;
   };
 }
 
