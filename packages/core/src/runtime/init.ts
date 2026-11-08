@@ -50,6 +50,7 @@ import {
   skipsHiddenImages,
 } from "./timedClipHide";
 import {
+  capturePageIn,
   inPlayerFrame,
   STUDIO_PREVIEW_MARK_META,
   PREVIEW_ONLY_ATTRS,
@@ -71,6 +72,7 @@ import {
   seekGsapTimeline,
   type GsapStructureKey,
 } from "./adapters/gsap";
+import { stampAuthoredOrder } from "./adapters/gsapAuthoredOrder";
 import { createAnimeJsAdapter } from "./adapters/animejs";
 import { createLottieAdapter } from "./adapters/lottie";
 import { createThreeAdapter } from "./adapters/three";
@@ -459,10 +461,13 @@ export function installAuthoredMediaCapture(): void {
 }
 
 // Mid-tween, GSAP's default force3D writes translate3d, and Chrome snaps a crop edge on it to whole pixels.
-// Runs at script evaluation: GSAP is configured as its bundle assigns window.gsap, before a composition's
-// set() or from() parses an element. Chains to an accessor already there (the producer's early stub).
+// Runs at script evaluation, as GSAP's bundle assigns window.gsap and before a composition's set() or from() parses
+// an element: force3D off, and tweens numbered by write order. Chains to an accessor already there (the early stub).
 export function installFlatGsapTransforms(): void {
-  const flatten = (g: Window["gsap"]) => g?.config?.({ force3D: false });
+  const flatten = (g: Window["gsap"]) => {
+    g?.config?.({ force3D: false });
+    stampAuthoredOrder(g);
+  };
   const prior = Object.getOwnPropertyDescriptor(window, "gsap");
   let loaded = window.gsap;
   flatten(loaded);
@@ -2999,6 +3004,7 @@ export function initSandboxRuntimeModular(): void {
   const hiddenImagesSkipped = skipsHiddenImages();
   const mediaDeferred = defersMedia();
   const studioPreview = document.querySelector(`meta[name="${STUDIO_PREVIEW_MARK_META}"]`) !== null;
+  const loadsAhead = !capturePageIn(document);
   const skipFarScenes = createFarSceneSkip((host) =>
     runtimeElementWindow(host, {
       timelineRegistry: window.__timelines ?? {},
@@ -3263,7 +3269,7 @@ export function initSandboxRuntimeModular(): void {
         // Frees a clip the window armed; on one the parser started, it would only restart the fetch.
         if (decided)
           withoutOwnTimingRecords(el, () =>
-            releaseMedia(el, window.__HF_RELEASE_PASSED_MEDIA === true),
+            releaseMedia(el, !loadsAhead || window.__HF_RELEASE_PASSED_MEDIA === true),
           );
       }
     } else if (!visible || decided === undefined) {
@@ -3468,11 +3474,12 @@ export function initSandboxRuntimeModular(): void {
         preloadNearPlayhead(
           rawNode,
           isVisibleNow,
-          playerFrame
-            ? nextTakeClips(currentTime).has(rawNode)
-            : upcoming || mediaStaysDue(rawNode, visibleAt, currentTime),
+          loadsAhead &&
+            (playerFrame
+              ? nextTakeClips(currentTime).has(rawNode)
+              : upcoming || mediaStaysDue(rawNode, visibleAt, currentTime)),
           currentTime,
-          dueAtLoopStart(rawNode, visibleAt),
+          loadsAhead && dueAtLoopStart(rawNode, visibleAt),
         );
       if (!isMediaElement(rawNode) && !isImageElement(rawNode)) decidedTimedClip = true;
       if (isVideoElement(rawNode) || isImageElement(rawNode)) {
