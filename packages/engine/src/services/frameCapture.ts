@@ -130,6 +130,7 @@ import {
 } from "./chromeMemorySampler.js";
 import { sampleProcessRss } from "../utils/processRss.js";
 import type { CompositionLengthSource } from "@hyperframes/core/runtime/composition-length";
+import { assertVariablesMatchPage } from "./variablesCheck.js";
 export { isMemoryExhaustionError, isTransientBrowserError } from "./captureFailure.js";
 
 export type { CaptureOptions, CaptureResult, CaptureBufferResult, CapturePerfSummary };
@@ -234,6 +235,8 @@ export interface CaptureSession {
   scriptLoadCauses?: ScriptLoadCause[];
   /** Uncaught page errors; a timed-out timeline wait with any of these becomes a script failure. */
   pageErrors: string[];
+  /** True once this session honoured `options.strictVariables`: the check ran and passed. */
+  strictVariablesChecked?: boolean;
   /** The first VFX chain error; its frames would lack the effect, so it stops the render. */
   vfxFailure?: string;
   /** Outcome of the sub-composition timeline wait: ready | timeout | script_failure. */
@@ -1463,8 +1466,10 @@ async function finalizeDrawElementInit(
 export async function completeDeferredDrawElementInit(session: CaptureSession): Promise<void> {
   if (!session.deInitDeferred || !session.onBeforeCapture) return;
   const page = session.page;
-  const logInitPhase = (phase: string) =>
-    console.error(`[initSession:${session.captureMode}] ${phase} (deferred drawElement init)`);
+  const logInitPhase = (phase: string) => {
+    if (process.env.HF_DEBUG_RENDER === "1")
+      console.error(`[initSession:${session.captureMode}] ${phase} (deferred drawElement init)`);
+  };
   await finalizeDrawElementInit(session, page, logInitPhase, {
     transparent: capturesAlpha(session.options),
     forceDE: process.env.HF_FORCE_DRAWELEMENT === "1",
@@ -3076,6 +3081,13 @@ export async function describeThrowSite(
   return ` [thrown at: ${where}]`;
 }
 
+/** When the session asks for strict variables, refuse a render whose variables the page does not declare. */
+async function checkStrictVariables(session: CaptureSession): Promise<void> {
+  if (!session.options.strictVariables) return;
+  await assertVariablesMatchPage(session.page, session.options.variables);
+  session.strictVariablesChecked = true;
+}
+
 export async function initializeSession(session: CaptureSession): Promise<void> {
   const { page, serverUrl } = session;
 
@@ -3086,7 +3098,11 @@ export async function initializeSession(session: CaptureSession): Promise<void> 
     const text = msg.text();
     const locationUrl = msg.location()?.url ?? "";
     const diagnostic = formatConsoleDiagnostic(type, text, locationUrl);
-    if (!diagnostic.suppressHostLog && !loggedEarlierInRender(session, text)) {
+    if (
+      !diagnostic.suppressHostLog &&
+      !quietRuntimeDetail(text) &&
+      !loggedEarlierInRender(session, text)
+    ) {
       console.error(diagnostic.text);
     }
     appendBrowserDiagnostic(session, diagnostic.text);
@@ -3163,7 +3179,8 @@ export async function initializeSession(session: CaptureSession): Promise<void> 
     session.config?.pageNavigationTimeout ?? DEFAULT_CONFIG.pageNavigationTimeout;
   const initStart = Date.now();
   const logInitPhase = (phase: string) => {
-    console.error(`[initSession:${session.captureMode}] ${phase} (${Date.now() - initStart}ms)`);
+    if (process.env.HF_DEBUG_RENDER === "1")
+      console.error(`[initSession:${session.captureMode}] ${phase} (${Date.now() - initStart}ms)`);
   };
   const gotoEntryPage = async (): Promise<void> => {
     appendBrowserDiagnostic(
@@ -3213,6 +3230,7 @@ export async function initializeSession(session: CaptureSession): Promise<void> 
       session.config?.playerReadyTimeout ?? DEFAULT_CONFIG.playerReadyTimeout;
     await pollHfReady(page, pageReadyTimeout);
     logInitPhase("pollHfReady complete");
+    await checkStrictVariables(session);
 
     await waitForSubCompositionTimelines(session, page, pageReadyTimeout);
     logInitPhase(`pollSubCompositionTimelines complete (${session.subTimelineWaitOutcome})`);
@@ -3355,6 +3373,7 @@ export async function initializeSession(session: CaptureSession): Promise<void> 
       session.config?.playerReadyTimeout ?? DEFAULT_CONFIG.playerReadyTimeout;
     await pollHfReady(page, pageReadyTimeout);
     logInitPhase("pollHfReady complete");
+    await checkStrictVariables(session);
 
     await waitForSubCompositionTimelines(session, page, pageReadyTimeout);
     logInitPhase(`pollSubCompositionTimelines complete (${session.subTimelineWaitOutcome})`);
@@ -6177,4 +6196,8 @@ export function getCapturePerfSummary(session: CaptureSession): CapturePerfSumma
     deNcprFallbacks: ncprFallbacks,
     deFrameTimeouts: session.deFrameTimeouts ?? 0,
   };
+}
+
+function quietRuntimeDetail(text: string): boolean {
+  return process.env.HF_DEBUG_RENDER !== "1" && text.startsWith("[hyperframes] render runtime fps");
 }

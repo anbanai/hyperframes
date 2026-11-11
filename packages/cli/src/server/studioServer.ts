@@ -41,6 +41,7 @@ import {
   PREVIEW_ALLOWED_HOSTS_ENV,
   previewAllowedHostsFromEnv,
 } from "@hyperframes/studio-server/request-identity";
+import { mountShareRoutes } from "./shareRoutes.js";
 import { isDevMode } from "../utils/env.js";
 import { insideHostApp } from "../utils/desktopApp.js";
 import { runRenderSetupWorker } from "../utils/cancellableProcess.js";
@@ -63,6 +64,7 @@ import {
   PREVIEW_BUNDLE_OPTIONS,
   createPreviewDocumentStore,
   thumbnailDeviceScaleFactor,
+  grantCaptureLoads,
   type ResolvedProject,
   type RenderJobState,
   type BackgroundRemovalRender,
@@ -804,6 +806,7 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
           opts.seekTime,
           async (page) => {
             await page.setViewport(viewport);
+            await grantCaptureLoads(await page.createCDPSession(), opts.previewUrl);
             await page.goto(opts.previewUrl, { waitUntil: "domcontentloaded", timeout: 10000 });
             await assertWebGpuAdapterAvailable(
               page,
@@ -1097,6 +1100,7 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
   });
 
   mountDesktopRoutes(app, projectDir);
+  mountShareRoutes(app, projectDir);
 
   // ── Pre-flight checks for render ────────────────────────────────────────
   // Intercept render requests before they reach the shared API so we can
@@ -1117,7 +1121,7 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
   // Mount the shared studio API at /api.
   // Use fetch() forwarding (not .route()) so the sub-app sees paths without
   // the /api prefix — the shared module's path extraction uses c.req.path.
-  const api = createStudioApi(adapter, { allowedHosts });
+  const api = createStudioApi(adapter, { allowedHosts, sandboxThumbnailCaptures: true });
   app.all("/api/*", async (c) => {
     const url = new URL(c.req.url);
     url.pathname = url.pathname.slice(4); // Strip "/api" prefix
@@ -1241,9 +1245,10 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
     // (`HYPERFRAMES_PREVIEW_HOST=0.0.0.0`) needs it to stay in agreement with
     // the CLI. See buildStudioHeadScriptsForHost.
     const headScript = buildStudioHeadScriptsForHost(buildRuntimeEnvScript(), c.req.header("host"));
-    if (headScript) {
-      html = html.replace("<head>", `<head>${headScript}`);
-    }
+    html = html.replace(
+      "<head>",
+      `<head><meta name="hyperframes-local-share" content="1">${headScript}`,
+    );
     // The shell names the current hashed bundle, so it always revalidates.
     // `no-cache` not `no-store`: same refetch without an ETag, but `no-store`
     // would blocklist the document from Chrome's bfcache.
