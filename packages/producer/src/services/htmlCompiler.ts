@@ -56,6 +56,7 @@ import {
   emitRootCompositionVariableStyles,
   readDeclaredDefaults,
   parseHostVariableValues,
+  boundMediaSrc,
   headStyleRuns,
   isAlwaysAppliedStyle,
   dedupeFontFaceRules,
@@ -71,11 +72,13 @@ import {
 } from "@hyperframes/parsers/sub-composition-validity";
 import {
   isUnresolvedAssetPlaceholder,
+  namesAnotherNetworkRoot,
   readProjectFile,
   readTextFile,
+  resolveCompositionSrc,
 } from "@hyperframes/parsers/asset-resolution";
 import { extractMediaMetadata, extractAudioMetadata } from "../utils/ffprobe.js";
-import { isPathInside, resolveCompositionSrc, toExternalAssetKey } from "../utils/paths.js";
+import { isPathInside, toExternalAssetKey } from "../utils/paths.js";
 import { collectHiddenVideoIds, collectRenderMedia } from "./renderMediaCollector.js";
 import {
   type VideoElement,
@@ -537,6 +540,9 @@ async function resolveMediaDuration(
     if (!filePath.startsWith("/")) filePath = join(baseDir, filePath);
     // ffprobe reads only the header of a remote source, so it is probed in place.
     filePath = urlByAbsentLocalPath?.get(filePath) ?? filePath;
+    if (!isHttpUrl(filePath) && namesAnotherNetworkRoot(baseDir, filePath)) {
+      return { duration: null, resolvedPath: filePath };
+    }
   }
 
   if (!isHttpUrl(filePath) && !existsSync(filePath)) {
@@ -2033,7 +2039,10 @@ function rewriteUnresolvableGsapToCdn(
   compSrcPath?: string,
 ): string {
   let gsapDist: string | undefined;
-  const exists = (path: string) => existsSync(resolve(projectDir, path));
+  const exists = (path: string) => {
+    const file = resolve(projectDir, path);
+    return !namesAnotherNetworkRoot(projectDir, file) && existsSync(file);
+  };
   return html.replace(
     /(<script\b[^>]*\bsrc=["'])([^"']*gsap[^"']*\/dist\/([^"']+))(["'][^>]*>)/gi,
     (full, prefix, src, file, suffix) => {
@@ -2079,6 +2088,29 @@ function rebaseDirectEntryAssetPaths(html: string, projectDir: string, htmlPath:
 }
 
 /**
+ * Point each `data-var-src` video/audio at the clip its variable names, so the length and sound read below
+ * are the bound clip's. Media under a per-instance `data-variable-values` host keeps the browser's answer.
+ */
+function bindVariableMediaSources(html: string, variables: Record<string, unknown>): string {
+  if (!html.includes("data-var-src")) return html;
+  const { document } = parseHTML(html);
+  const declared: Record<string, unknown> = {};
+  for (const el of document.querySelectorAll("[data-composition-variables]")) {
+    Object.assign(declared, readDeclaredDefaults(el));
+  }
+  const values = { ...declared, ...variables };
+  let changed = false;
+  for (const el of document.querySelectorAll("video[data-var-src], audio[data-var-src]")) {
+    if (el.closest("[data-variable-values]")) continue;
+    const src = boundMediaSrc(el, values);
+    if (src === null || el.getAttribute("src") === src) continue;
+    el.setAttribute("src", src);
+    changed = true;
+  }
+  return changed ? document.toString() : html;
+}
+
+/**
  * Compile an HTML composition project into a single self-contained HTML string
  * with all media metadata resolved.
  */
@@ -2090,9 +2122,9 @@ export async function compileForRender(
   options: CompileForRenderOptions = {},
 ): Promise<CompiledComposition> {
   const entryHtml = rebaseDirectEntryAssetPaths(readTextFile(htmlPath), projectDir, htmlPath);
-  const rawHtml = normalizeCompositionSrcs(
-    rewriteUnresolvableGsapToCdn(entryHtml, projectDir),
-    projectDir,
+  const rawHtml = bindVariableMediaSources(
+    normalizeCompositionSrcs(rewriteUnresolvableGsapToCdn(entryHtml, projectDir), projectDir),
+    options.variables ?? {},
   );
 
   // Pre-flight: every data-composition-src reference must resolve to a
@@ -2301,7 +2333,7 @@ export async function compileForRender(
   for (const video of videos) {
     if (isHttpUrl(video.src)) continue;
     const videoPath = resolve(projectDir, video.src);
-    if (advised.has(videoPath)) continue;
+    if (advised.has(videoPath) || namesAnotherNetworkRoot(projectDir, videoPath)) continue;
     advised.add(videoPath);
     const reencode = `ffmpeg -i "${video.src}" -c:v libx264 -r 30 -g 30 -keyint_min 30 -movflags +faststart -c:a copy output.mp4`;
     (async () => {
